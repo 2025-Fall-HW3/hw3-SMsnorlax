@@ -70,7 +70,56 @@ class MyPortfolio:
         """
         TODO: Complete Task 4 Below
         """
-        
+                # 所有可投資資產（排除 SPY）
+        assets = self.price.columns[self.price.columns != self.exclude]
+
+        # 用全部資料做 in-sample 最佳化
+        R = self.returns[assets].iloc[1:]   # 刪掉開頭那列 0 報酬
+        mu = R.mean().values               # 期望報酬 μ
+        Sigma = R.cov().values             # 協方差矩陣 Σ
+        n = len(assets)
+
+        def solve_for_gamma(gamma):
+            """給定 gamma，解一次 mean-variance QP，回傳權重 w"""
+            with gp.Env(empty=True) as env:
+                env.setParam("OutputFlag", 0)
+                env.setParam("DualReductions", 0)
+                env.start()
+                with gp.Model(env=env, name="my_portfolio") as model:
+                    w = model.addMVar(n, lb=0.0, ub=1.0, name="w")
+                    lin_term = mu @ w
+                    quad_term = w @ Sigma @ w
+                    model.setObjective(lin_term - gamma / 2.0 * quad_term,
+                                       gp.GRB.MAXIMIZE)
+                    model.addConstr(w.sum() == 1.0, name="budget")
+                    model.optimize()
+
+                    if model.status in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL):
+                        return w.X
+                    else:
+                        # fallback：等權重
+                        return np.ones(n) / n
+
+        # 掃一組 gamma，挑 Sharpe Ratio 最高的那組權重
+        gamma_list = [0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0]
+        best_sharpe = -1e9
+        best_w = np.ones(n) / n
+
+        R_values = R.values
+        for g in gamma_list:
+            w_candidate = solve_for_gamma(g)
+            port_ret = R_values @ w_candidate
+            std = port_ret.std()
+            if std > 0:
+                sharpe = port_ret.mean() / std
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_w = w_candidate
+
+        # 把找到的最佳權重套用到整段期間（固定權重）
+        for date in self.price.index:
+            self.portfolio_weights.loc[date, assets] = best_w
+            # SPY 權重自然保持 NaN，後面 fillna(0) 會變成 0
         
         """
         TODO: Complete Task 4 Above
